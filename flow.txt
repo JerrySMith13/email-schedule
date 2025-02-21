@@ -1,0 +1,7 @@
+starts in homepage
+links to redirect
+once authorized, sends user to our server, which redirects to a page that awaits user info
+
+
+
+TODO: add state authorization in auth
