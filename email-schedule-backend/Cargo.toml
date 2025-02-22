@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-http-body-util = "0.1.2"
-hyper = "1.6.0"
-tokio = {version="1.43.0", features=["full"]}
+hyper = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full"] }
+http-body-util = "0.1"
+hyper-util = { version = "0.1", features = ["full"] }
+rustls = {version = "0.23", features = ["aws-lc-rs"]}
+webpki-roots = "0.26.8"
+tokio-rustls = "0.26.1"
+rustls-pemfile = "2.2.0"
