@@ -6,19 +6,29 @@
 //! otherwise HTTP/1.1 will be used.
 
 use std::net::{Ipv4Addr, SocketAddr};
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::{env, fs, io};
+use std::sync::Mutex;
 
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder;
+
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::ServerConfig;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
+use lru::LruCache;
+
 mod server;
+
+type CacheRef = Arc<Mutex<LruCache<String, Arc<Vec<u8>>>>>;
+
+const MAX_LRU_CAPACITY: NonZeroUsize = NonZeroUsize::new(1000).unwrap();
+
 fn main() {
     // Serve an echo service over HTTPS, with proper error handling.
     if let Err(e) = run_server() {
@@ -63,6 +73,10 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Load private key.
     let key = load_private_key(key_path.to_str().unwrap())?;
 
+    let mut lru: LruCache<String, Arc<Vec<u8>>> = lru::LruCache::new(MAX_LRU_CAPACITY);
+    let cache: CacheRef = Arc::new(Mutex::new(lru));
+
+
     println!("Starting to serve on https://{}", addr);
 
     // Create a TCP listener via tokio.
@@ -81,12 +95,20 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec(), b"http/1.0".to_vec()];
     let tls_acceptor = TlsAcceptor::from(Arc::new(server_config));
 
-    let service = service_fn(server::serve);
+    let service = service_fn( move |req| {
+        // Clone state for each request
+        let cache = cache.clone();
+        // Pass state to serve function
+        server::serve(req, cache)
+    });
+
+    let service_arc = Arc::new(service.clone());
 
     loop {
         tokio::select! {
             Ok((tcp_stream, _remote_addr)) = incoming.accept() => {
                 let tls_acceptor = tls_acceptor.clone();
+            let serve = service_arc.clone();
             tokio::spawn(async move {
                 let tls_stream = match tls_acceptor.accept(tcp_stream).await {
                     Ok(tls_stream) => tls_stream,
@@ -95,8 +117,9 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         return;
                     }
                 };
+                
                 if let Err(err) = Builder::new(TokioExecutor::new())
-                    .serve_connection(TokioIo::new(tls_stream), service)
+                    .serve_connection(TokioIo::new(tls_stream), Arc::clone(&serve))
                     .await
                 {
                     eprintln!("failed to serve connection: {err:#}");

@@ -12,3 +12,6 @@ rustls = {version = "0.23", features = ["aws-lc-rs"]}
 webpki-roots = "0.26.8"
 tokio-rustls = "0.26.1"
 rustls-pemfile = "2.2.0"
+
+
+lru = "0.13.0"
