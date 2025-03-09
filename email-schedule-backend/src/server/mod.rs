@@ -1,39 +1,40 @@
-
-use std::io::Read;
 use std::sync::Arc;
 
-use http_body_util::{BodyExt, Full};
+use http_body_util::Full;
 use hyper::body::{Bytes, Incoming};
 use hyper::http::{Method, Request, Response, StatusCode};
 
-use crate::CacheRef;
+use crate::server_state::ServerState;
 
-pub async fn serve(req: Request<Incoming>, cache: CacheRef) -> Result<Response<Full<Bytes>>, hyper::Error> {
-    let mut response = Response::new(Full::default());
+pub async fn serve(req: Request<Incoming>, state: Arc<ServerState>) -> Result<Response<Full<Bytes>>, hyper::Error> {
     match req.method() {
-        // Help route.
+        /*
+        Path management
+        /web: Serve the web interface
+        /favicon.ico: Serve the favicon
+        /: Serve the main page
+        /oauth2: Serve the OAuth2 interface
+
+        
+         */
         &Method::GET => {
-            match req.uri().path() {
-
-                "/sign-up" => {
-                    
-                }
-
-                "/favicon.ico" => {
-                    
-                }
-
-                _ => {
-                    *response.status_mut() = StatusCode::NOT_FOUND;
-                }
-
-
-            }
+            //TEST stuff
+            state.add_state(req.headers().get("user-agent").unwrap().to_str().unwrap());
+            state.lru.lock().unwrap().put("Hello wolrd".to_string(), Arc::new("Hello world".to_string().into_bytes()));
+            return Ok(Response::builder()
+                .status(StatusCode::OK)
+                .body("Hi world!".into())
+                .unwrap());
         }
+
         // Catch-all 404.
         _ => {
-            *response.status_mut() = StatusCode::NOT_FOUND;
+            let response = Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body("Not Found".into())
+                .unwrap();
+            return Ok(response);
         }
     };
-    Ok(response)
+    
 }

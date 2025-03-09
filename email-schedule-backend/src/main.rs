@@ -6,11 +6,9 @@
 //! otherwise HTTP/1.1 will be used.
 
 use std::net::{Ipv4Addr, SocketAddr};
-use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::{env, fs, io};
-use std::sync::Mutex;
 
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -21,13 +19,8 @@ use rustls::ServerConfig;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
-use lru::LruCache;
-
 mod server;
-
-type CacheRef = Arc<Mutex<LruCache<String, Arc<Vec<u8>>>>>;
-
-const MAX_LRU_CAPACITY: NonZeroUsize = NonZeroUsize::new(1000).unwrap();
+mod server_state;
 
 fn main() {
     // Serve an echo service over HTTPS, with proper error handling.
@@ -65,6 +58,7 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
     let addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), port);
 
+    println!("Loading certificate and private key...");
     let certs_path = get_absolute_path("encrypt-files/sample.pem")?;
     let key_path = get_absolute_path("encrypt-files/sample.rsa")?;
 
@@ -72,9 +66,14 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let certs = load_certs(certs_path.to_str().unwrap())?;
     // Load private key.
     let key = load_private_key(key_path.to_str().unwrap())?;
-
-    let mut lru: LruCache<String, Arc<Vec<u8>>> = lru::LruCache::new(MAX_LRU_CAPACITY);
-    let cache: CacheRef = Arc::new(Mutex::new(lru));
+    println!("Loaded certificate and private key!");
+    println!("Loading server state...");
+    let state = server_state::ServerState::new();
+    let state_arc = Arc::new(state);
+    let state_arc_clone = state_arc.clone();
+    tokio::spawn(server_state::ServerState::maintenance_thread(state_arc_clone));
+    println!("Loaded server state!");
+    
 
 
     println!("Starting to serve on https://{}", addr);
@@ -86,6 +85,7 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let graceful = hyper_util::server::graceful::GracefulShutdown::new();
     // when this signal completes, start shutdown
     let mut signal = std::pin::pin!(shutdown_signal());
+    let graceful_state_arc = state_arc.clone();
 
     // Build TLS configuration.
     let mut server_config = ServerConfig::builder()
@@ -94,12 +94,12 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .map_err(|e| error(e.to_string()))?;
     server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec(), b"http/1.0".to_vec()];
     let tls_acceptor = TlsAcceptor::from(Arc::new(server_config));
-
+    
     let service = service_fn( move |req| {
         // Clone state for each request
-        let cache = cache.clone();
+        let state = state_arc.clone();
         // Pass state to serve function
-        server::serve(req, cache)
+        server::serve(req, state)
     });
 
     let service_arc = Arc::new(service.clone());
@@ -130,6 +130,8 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
          _ = &mut signal => {
             // shutdown signal received
             eprintln!("Shutting down");
+            graceful_state_arc.stop_maintenance();
+            eprintln!("Waiting for all connections to close");
             break;
         }
 
@@ -145,6 +147,7 @@ async fn run_server() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Ok(())
         }
     }
+    
 }
 
 // Load public certificate from file.
